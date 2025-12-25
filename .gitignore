@@ -1,0 +1,10 @@
+.env
+__pycache__/
+.DS_Store
+venv/
+*.pyc
+
+#data
+data/
+archive/
+postgres_data/ 
