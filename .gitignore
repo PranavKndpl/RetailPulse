@@ -3,8 +3,10 @@ __pycache__/
 .DS_Store
 venv/
 *.pyc
+test.py
 
 #data
 data/
 archive/
 postgres_data/ 
+models/

@@ -1,11 +1,16 @@
 import os
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
+import pandas as pd
 
 load_dotenv()
 
 DB_URL = f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
 engine = create_engine(DB_URL)
+
+"""
+For every delivered order, combine order info, item prices, product category, and customer reviews into one result.
+"""
 
 SQL_CREATE_VIEW = """
 DROP VIEW IF EXISTS master_orders_view;
@@ -35,16 +40,15 @@ WHERE o.order_status = 'delivered';
 """
 
 def init_db():
-    print("🛠  Initializing Database Views...")
+    print("Initializing Database Views...")
     with engine.connect() as conn:
         conn.execute(text(SQL_CREATE_VIEW))
         conn.commit()
-    print("✅ Master View created.")
+    print("Master View created.")
     
-    # Validation
-    import pandas as pd
+
     df = pd.read_sql("SELECT * FROM master_orders_view LIMIT 3", engine)
-    print("\n📊 Data Preview (First 3 Rows):")
+    print("\nData Preview (First 3 Rows):")
     print(df[['order_id', 'price', 'review_score']])
 
 if __name__ == "__main__":

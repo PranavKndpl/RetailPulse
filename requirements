@@ -2,3 +2,6 @@ pandas
 sqlalchemy
 psycopg2-binary
 python-dotenv
+xgboost
+scikit-learn
+joblib
