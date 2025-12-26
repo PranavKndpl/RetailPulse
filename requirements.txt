@@ -13,3 +13,6 @@ langchain-core
 langchain-groq
 langchain-chroma
 sentence-transformers
+
+streamlit
+plotly
