@@ -1,93 +1,94 @@
 import os
-from pydantic import SecretStr
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_community.document_loaders import TextLoader
+from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings 
 
 class LLMEngine:
     def __init__(self):
-        print("[INFO] Initializing LLM Engine (via Groq Cloud)...")
-        
+        print("[INFO] Initializing LLM Engine...")
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
-            raise ValueError("GROQ_API_KEY not found in .env file!")
+            raise ValueError("❌ GROQ_API_KEY not found in .env!")
 
-        self.summarizer = ChatGroq(
-            api_key=SecretStr(api_key),
-            model="llama-3.1-8b-instant",
-            temperature=0
-        )
+        # TIER 1: FAST (Llama-3.1-8b-instant)
+        # Note: Groq serves the base model. To use a custom LoRA, 
+        # you typically need a local server (like vLLM) or a platform that supports adapters.
+        # For this "Show Off", we will simulate the "Fine-Tuned" style via sophisticated prompting.
+        self.fast_llm = ChatGroq(api_key=api_key, model="llama-3.1-8b-instant", temperature=0.3)
         
-        self.strategist = ChatGroq(
-            api_key=SecretStr(api_key),
-            model="llama-3.3-70b-versatile", 
-            temperature=0.2
-        )
+        # TIER 2: SMART (Llama-3.3-70b-versatile)
+        self.smart_llm = ChatGroq(api_key=api_key, model="llama-3.3-70b-versatile", temperature=0.3)
         
-        self.vector_db_path = "models/chroma_db"
+        # RAG Setup
         self.embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        self.db = None
+        self.vector_db = None
+
+    def update_knowledge_base(self, text_content):
+        """Dynamically builds the vector DB from user input."""
+        if not text_content.strip():
+            self.vector_db = None
+            return "[INFO] Knowledge Base cleared."
+
+        print(" -> Updating Knowledge Base...")
+        doc = Document(page_content=text_content, metadata={"source": "user_input"})
+        self.vector_db = Chroma.from_documents(documents=[doc], embedding=self.embedding_function)
+        return "[SUCCESS] RAG System Updated."
+
+    def _get_rag_context(self, query):
+        if self.vector_db:
+            docs = self.vector_db.similarity_search(query, k=1)
+            if docs:
+                return docs[0].page_content
+        return "No specific rules."
+
+    def analyze_visuals(self, data_summary):
+        """
+        TIER 1: "Fine-Tuned Style" Analysis.
+        Instead of repeating numbers, it focuses on business implications.
+        """
+        rag_context = self._get_rag_context("visual trends summary")
         
-        self._initialize_knowledge_base()
-
-    def _initialize_knowledge_base(self): #sop to vector db
-        if not os.path.exists("data/sops.txt"):
-            print("CRITICAL ERROR: 'data/sops.txt' not found!")
-            return
-
-        if os.path.exists(self.vector_db_path):
-            print("   -> Loading existing Vector DB...")
-            self.db = Chroma(persist_directory=self.vector_db_path, embedding_function=self.embedding_function)
-        else:
-            print("   -> Creating new Vector DB from SOPs...")
-            loader = TextLoader("data/sops.txt")
-            docs = loader.load()
-            self.db = Chroma.from_documents(documents=docs, embedding=self.embedding_function, persist_directory=self.vector_db_path)
-            print("   -> Vector DB created successfully.")
-
-    def summarize_reviews(self, reviews_list):
-        if not reviews_list:
-            return "No reviews available."
+        # WE 'SHOW OFF' BY GIVING IT A PERSONA THAT MIMICS A FINE-TUNED ANALYST
+        prompt = ChatPromptTemplate.from_template(
+            """
+            You are a Senior Data Journalist using a specific style called 'The Insightful LoRA'.
             
-        print(f"   -> Summarizing {len(reviews_list)} reviews...")
-        text_block = "\n".join(reviews_list[:30]) 
+            STYLE GUIDELINES:
+            1. DO NOT repeat the exact numbers from the data summary unless necessary for contrast.
+            2. Focus on the 'Why' and 'So What'.
+            3. Use professional, punchy language. No "The data indicates..."
+            4. If a User Rule (SOP) is present, mention how the data respects or violates it.
+            
+            USER RULES: {rag_context}
+            
+            DATA SUMMARY:
+            {data_summary}
+            
+            OUTPUT:
+            Provide 3 sharp, distinct insights in the 'Insightful LoRA' style.
+            """
+        )
+        
+        chain = prompt | self.fast_llm | StrOutputParser()
+        return chain.invoke({"rag_context": rag_context, "data_summary": data_summary})
+
+    def generate_strategy(self, data_summary, user_query=""):
+        """
+        TIER 2: Strategic Advice (70b)
+        """
+        rag_context = self._get_rag_context(user_query + " forecast strategy")
         
         prompt = ChatPromptTemplate.from_template(
             """
-            Analyze the following reviews and extract key complaints.
-            Be concise. Output a bulleted list.
-            Reviews: {reviews}
+            You are a Strategy Consultant.
+            CONTEXT: {rag_context}
+            DATA: {data_summary}
+            
+            TASK: Provide 3 strategic, actionable steps.
             """
         )
-        chain = prompt | self.summarizer | StrOutputParser()
-        return chain.invoke({"reviews": text_block})
-
-    def decide_action(self, anomaly_type, summary):
-        print("   -> Consulting SOPs and Llama-3.3...")
-        
-        if self.db:
-            query = f"{anomaly_type} {summary}"
-            docs = self.db.similarity_search(query, k=1)
-            retrieved_policy = docs[0].page_content if docs else "No specific policy found."
-        else:
-            retrieved_policy = "No Knowledge Base loaded."
-        
-        prompt = ChatPromptTemplate.from_template(
-            """
-            You are an Operations Manager.
-            CONTEXT:
-            - Issue: {anomaly_type}
-            - Feedback: {summary}
-            
-            POLICY:
-            {policy}
-            
-            TASK:
-            Determine the action based on policy. Draft a short ticket.
-            """
-        )
-        chain = prompt | self.strategist | StrOutputParser()
-        return chain.invoke({"anomaly_type": anomaly_type, "summary": summary, "policy": retrieved_policy})
+        chain = prompt | self.smart_llm | StrOutputParser()
+        return chain.invoke({"rag_context": rag_context, "data_summary": data_summary})

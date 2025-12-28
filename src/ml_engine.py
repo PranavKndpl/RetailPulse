@@ -1,78 +1,154 @@
+# MODEL CONTRACT v1.0
+# Do not modify features, targets, or metrics without bumping version.
+
 import pandas as pd
+import numpy as np
 import xgboost as xgb
-from sklearn.ensemble import IsolationForest
+from prophet import Prophet
 from sklearn.metrics import mean_absolute_error
-import joblib
-import os
+import warnings
+warnings.filterwarnings("ignore")
+
 
 class MLEngine:
-    def __init__(self, db_engine):
-        self.db_engine = db_engine
-        self.models_path = "models/saved/"
-        os.makedirs(self.models_path, exist_ok=True)
+    def __init__(self):
+        pass
 
-    def load_data(self):
-        print("[INFO] Loading data from SQL...")
-        query = "SELECT * FROM master_orders_view"
-        df = pd.read_sql(query, self.db_engine)
-        
-        df['order_purchase_timestamp'] = pd.to_datetime(df['order_purchase_timestamp'])
-        return df
+    # -----------------------------
+    # DATA PREPARATION
+    # -----------------------------
+    def _prepare_data(self, df, date_col, target_col, context):
+        data = df[[date_col, target_col]].copy()
+        data.columns = ['ds', 'y']
+        data['ds'] = pd.to_datetime(data['ds'])
+        data = data.sort_values('ds').dropna()
 
-    def train_forecaster(self): 
-        # XGBoost to predict Daily Sales Volume.
-        
-        print("[INFO] Starting Sales Forecast Training...")
-        df = self.load_data()
+        # Finance → log returns
+        if context == "Financial":
+            data['y'] = np.log(data['y'] / data['y'].shift(1))
 
-        daily_sales = df.set_index('order_purchase_timestamp').resample('D').size().reset_index(name='order_count')
-        
-        daily_sales['order_purchase_timestamp'] = pd.to_datetime(daily_sales['order_purchase_timestamp'])
+            # Remove invalid numeric values (CRITICAL)
+            data = data.replace([np.inf, -np.inf], np.nan)
 
-        daily_sales['lag_1'] = daily_sales['order_count'].shift(1) # Sales yesterday
-        daily_sales['lag_7'] = daily_sales['order_count'].shift(7) # Sales last week
-        
-        daily_sales['day_of_week'] = daily_sales['order_purchase_timestamp'].dt.dayofweek # type: ignore
-        daily_sales['month'] = daily_sales['order_purchase_timestamp'].dt.month # type: ignore
-        
-        daily_sales = daily_sales.dropna()
+            # Clip extreme returns (stability)
+            data['y'] = data['y'].clip(lower=-0.2, upper=0.2)
 
-        # Train/Test Split
-        X = daily_sales[['lag_1', 'lag_7', 'day_of_week', 'month']]
-        y = daily_sales['order_count']
-        
-        # last 30 days for testing
-        split_idx = len(daily_sales) - 30
-        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+        return data.dropna()
 
+    # -----------------------------
+    # FEATURE ENGINEERING (CAUSAL)
+    # -----------------------------
+    def _features(self, df, context):
+        df = df.copy()
 
-        model = xgb.XGBRegressor(n_estimators=100, learning_rate=0.1, max_depth=5)
-        model.fit(X_train, y_train)
+        df['lag_1'] = df['y'].shift(1)
+        df['lag_7'] = df['y'].shift(7)
+        df['roll_7'] = df['y'].shift(1).rolling(7).mean()
 
+        if context == "Retail":
+            df['dow'] = df['ds'].dt.dayofweek
+            df['is_weekend'] = (df['dow'] >= 5).astype(int)
 
-        preds = model.predict(X_test)
-        mae = mean_absolute_error(y_test, preds)
-        print(f"[SUCCESS] Forecasting Model Trained. MAE: {mae:.2f}")
+        if context == "Financial":
+            df['vol_7'] = df['y'].shift(1).rolling(7).std()
 
+        features = [c for c in df.columns if c not in ['ds', 'y']]
+        return df.dropna(), features
 
-        joblib.dump(model, f"{self.models_path}forecast_xgb.pkl")
-        return model, mae
+    # -----------------------------
+    # METRICS
+    # -----------------------------
+    def _direction_accuracy(self, y_true, y_pred):
+        return (
+            np.sign(y_true.diff().iloc[1:]) ==
+            np.sign(y_pred.diff().iloc[1:])
+        ).mean() * 100
 
-    def train_anomaly_detector(self):
-        
-        # Train Isolation Forest to detect anomalous orders.
+    # -----------------------------
+    # XGBOOST
+    # -----------------------------
+    def _xgboost(self, data, context, mode):
+        data, feats = self._features(data, context)
 
-        print("[INFO] Starting Anomaly Detection Training...")
-        df = self.load_data()
-        
-        features = ['price', 'freight_value', 'delivery_delay_days', 'review_score'] # Features- Anomaly Detection
-        X = df[features].fillna(0) #fill NaNs with 0 to prevent errors
+        split = int(len(data) * 0.8)
+        train, test = data.iloc[:split], data.iloc[split:]
 
+        model = xgb.XGBRegressor(
+            n_estimators=400,
+            learning_rate=0.05,
+            max_depth=4,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42
+        )
+        model.fit(train[feats], train['y'])
 
-        model = IsolationForest(n_estimators=100, contamination=0.03, random_state=42) #assuming ~3% of data is anomalous
-        model.fit(X)
+        if mode == "Validation":
+            test['yhat'] = model.predict(test[feats])
+            return train, test, test[['ds', 'yhat']]
 
-        print("[SUCCESS] Anomaly Detector Trained.")
-        joblib.dump(model, f"{self.models_path}anomaly_isoforest.pkl")
-        return model
+        # Recursive 30-day forecast
+        history = data.copy()
+        future = []
+
+        for _ in range(30):
+            last = history.iloc[-1:]
+            pred = model.predict(last[feats])[0]
+            next_date = last['ds'].values[0] + pd.Timedelta(days=1)
+
+            history = pd.concat(
+                [history, pd.DataFrame({'ds': [next_date], 'y': [pred]})],
+                ignore_index=True
+            )
+            history, feats = self._features(history, context)
+            future.append({'ds': next_date, 'yhat': pred})
+
+        return history, None, pd.DataFrame(future)
+
+    # -----------------------------
+    # PROPHET
+    # -----------------------------
+    def _prophet(self, data, mode):
+        m = Prophet()
+        split = int(len(data) * 0.8)
+        train, test = data.iloc[:split], data.iloc[split:]
+
+        if mode == "Validation":
+            m.fit(train)
+            fc = m.predict(test[['ds']])
+            return train, test, fc[['ds', 'yhat']]
+
+        m.fit(data)
+        fc = m.predict(m.make_future_dataframe(30))
+        return data, None, fc[['ds', 'yhat']]
+
+    # -----------------------------
+    # MAIN ENTRY
+    # -----------------------------
+    def run_forecast(self, df, date_col, target_col, model, mode, context):
+        data = self._prepare_data(df, date_col, target_col, context)
+
+        if model == "XGBoost":
+            train, test, forecast = self._xgboost(data, context, mode)
+        else:
+            train, test, forecast = self._prophet(data, mode)
+
+        metrics = {}
+        if mode == "Validation":
+            y_true = test['y'].reset_index(drop=True)
+            y_pred = forecast['yhat'].reset_index(drop=True)
+
+            metrics['MAE'] = mean_absolute_error(y_true, y_pred)
+
+            if context == "Retail":
+                metrics['SMAPE'] = (
+                    100 * np.mean(
+                        2 * np.abs(y_pred - y_true) /
+                        (np.abs(y_true) + np.abs(y_pred) + 1e-8)
+                    )
+                )
+
+            if context == "Financial":
+                metrics['Direction'] = self._direction_accuracy(y_true, y_pred)
+
+        return train, test, forecast, metrics

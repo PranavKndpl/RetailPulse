@@ -1,141 +1,276 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import sqlite3
 import plotly.graph_objects as go
-import os
-import time
+import plotly.express as px
+import numpy as np
 from dotenv import load_dotenv
-
-from src.ml_engine import MLEngine
 from src.llm_engine import LLMEngine
-from sqlalchemy import create_engine
+from src.ml_engine import MLEngine
 
+# --- SETUP ---
+st.set_page_config(page_title="RetailPulse", layout="wide", page_icon="⚡")
 load_dotenv()
 
-st.set_page_config(page_title="RetailPulse Exec", layout="wide", page_icon="⚡")
-
-st.markdown("""
-    <style>
-    .main { background-color: #f9f9f9; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    div[data-testid="stExpander"] { background-color: #ffffff; border: none; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    h1, h2, h3 { color: #0f172a; font-family: 'Helvetica', sans-serif; }
-    .status-good { color: #10b981; font-weight: bold; }
-    .status-bad { color: #ef4444; font-weight: bold; }
-    </style>
-""", unsafe_allow_html=True)
-
+# --- LOAD ENGINES ---
 @st.cache_resource
-def get_resources():
-    DB_URL = f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
-    engine = create_engine(DB_URL)
-    ml = MLEngine(engine)
-    llm = LLMEngine()
-    return ml, llm
+def load_engines():
+    try:
+        return LLMEngine(), MLEngine()
+    except Exception as e:
+        st.error(f"❌ Critical Error: Engines failed to load.\n{e}")
+        return None, None
 
-ml_app, llm_app = get_resources()
+llm_engine, ml_engine = load_engines()
 
-def calculate_kpis(df):
-    total_rev = df['price'].sum()
-    avg_delay = df['delivery_delay_days'].mean()
-    pending_orders = len(df[df['delivery_delay_days'] > 3])
-    return total_rev, avg_delay, pending_orders
+# --- DATABASE CONNECTION ---
+try:
+    conn = sqlite3.connect("retailpulse.db", check_same_thread=False)
+except Exception as e:
+    st.error(f"❌ Database Connection Failed: {e}")
+    st.stop()
 
+# --- SIDEBAR ---
+with st.sidebar:
+    st.title("RetailPulse")
+    st.markdown(
+        "<h2 style='margin-bottom: 0.5rem;'>Workflow</h2>",
+        unsafe_allow_html=True
+    )
 
-st.title("⚡ RetailPulse Command Center")
-st.markdown("### 📅 Daily Operations Overview")
-
-df = ml_app.load_data()
-revenue, delay, issues = calculate_kpis(df)
-
-if issues > 5:
-    st.error(f"🚨 CRITICAL ATTENTION NEEDED: {issues} orders are severely delayed.")
-elif issues > 0:
-    st.warning(f"⚠️ SYSTEM ALERT: {issues} potential delivery issues detected.")
-else:
-    st.success("✅ ALL SYSTEMS NOMINAL: Operations are running smoothly.")
-
-st.markdown("---")
-
-c1, c2, c3, c4 = st.columns(4)
-
-with c1:
-    st.metric("Total Revenue", f"${revenue:,.0f}", delta="12% vs last week")
-with c2:
-    st.metric("Avg Delivery Time", f"{delay:.1f} Days", delta="-0.5 days", delta_color="inverse")
-with c3:
-    st.metric("Active Anomalies", f"{issues}", delta="High Risk", delta_color="inverse")
-with c4:
-    st.metric("AI Agent Status", "Active", delta="Llama-3.3")
-
-# FORECAST vs. ACTIONS
-col_left, col_right = st.columns([2, 1])
-
-with col_left:
-    st.subheader("📈 Revenue Outlook")
-
-    daily_sales = df.set_index('order_purchase_timestamp').resample('D').sum()['price'].reset_index()
-
-    daily_sales['price_smooth'] = daily_sales['price'].rolling(window=7).mean()
+    page = st.radio(
+        label="Workflow",
+        options=["1. Data Blender", "2. Visual Insights", "3. Forecast Engine"],
+        label_visibility="collapsed"
+    )
     
-    fig = px.area(daily_sales, x='order_purchase_timestamp', y='price_smooth', 
-                  title="", color_discrete_sequence=['#3b82f6'])
-    fig.update_layout(xaxis_title="", yaxis_title="Daily Revenue", plot_bgcolor='white')
-    st.plotly_chart(fig, use_container_width=True)
-
-with col_right:
-    st.subheader("⚡ Action Center")
+    st.markdown("---")
+    st.markdown("### 🧠 AI Context")
     
-    if issues > 0:
-        st.info(f"{issues} orders require manager review.")
-        
-        if st.button("🤖 Auto-Analyze Top Priorities", type="primary"):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            status_text.text("🔍 Scanning database for anomalies...")
-            progress_bar.progress(25)
-            time.sleep(0.5)
-            
-            model = ml_app.train_anomaly_detector()
-            features = ['price', 'freight_value', 'delivery_delay_days', 'review_score']
-            df['anomaly_score'] = model.predict(df[features].fillna(0))
-            anomalies = df[df['anomaly_score'] == -1].head(1) # getting the worst one for demo
-            
-            status_text.text("🧠 AI analyzing customer sentiment...")
-            progress_bar.progress(60)
-            
-            # Run LLM
-            row = anomalies.iloc[0]
-            review = row['review_comment_message'] if row['review_comment_message'] else "Customer reported severe delay."
-            summary = llm_app.summarize_reviews([review])
-            
-            status_text.text("⚖️ Consulting Company SOPs...")
-            progress_bar.progress(85)
-            
-            action = llm_app.decide_action("Critical Delay", summary)
-            
-            progress_bar.progress(100)
-            status_text.text("✅ Analysis Complete.")
-            
+    data_context = st.selectbox("Data Domain", ["Retail", "Financial", "Generic"])
+    user_rules = st.text_area(
+        "SOPs / Business Rules:",
+        height=100,
+        placeholder="e.g. 'Logistics are closed on Sundays'..."
+    )
+    
+    if st.button("💾 Update Memory"):
+        if llm_engine:
+            with st.spinner("Updating Knowledge Base..."):
+                msg = llm_engine.update_knowledge_base(user_rules)
+                st.success(msg)
 
-            with st.expander("🚨 Priority Issue: Order #9281", expanded=True):
-                st.markdown(f"**Customer Issue:** {summary}")
-                st.markdown(f"**AI Recommendation:**")
-                st.info(action)
-                c_a, c_b = st.columns(2)
-                with c_a:
-                    st.button("✅ Approve Ticket")
-                with c_b:
-                    st.button("❌ Dismiss")
+# --- SESSION STATE ---
+if 'master_df' not in st.session_state:
+    st.session_state['master_df'] = None
+if 'forecast_results' not in st.session_state:
+    st.session_state['forecast_results'] = None
 
+# ==========================================
+# PAGE 1: DATA BLENDER
+# ==========================================
+if page == "1. Data Blender":
+    st.title("📂 Data Blender")
+    
+    with st.expander("📤 Upload Raw Data", expanded=True):
+        uploaded_files = st.file_uploader("Upload CSVs", accept_multiple_files=True)
+        if uploaded_files:
+            success_count = 0
+            for f in uploaded_files:
+                table_name = f.name.split('.')[0].replace(" ", "_").lower()
+                try:
+                    df = pd.read_csv(f)
+                    df.to_sql(table_name, conn, if_exists='replace', index=False)
+                    success_count += 1
+                except Exception as e:
+                    st.error(f"❌ Error loading {f.name}: {e}")
+            
+            if success_count > 0:
+                st.success(f"Successfully uploaded {success_count} files to Database.")
+
+    st.markdown("---")
+    st.subheader("🔗 Merge Tables")
+    
+    try:
+        tables = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", conn)
+        table_list = tables['name'].tolist() if not tables.empty else []
+    except Exception:
+        table_list = []
+    
+    if not table_list:
+        st.info("No data found. Please upload files above.")
     else:
-        st.markdown("""
-        <div style="text-align: center; color: gray; padding: 50px;">
-            <h3>☕ Time for coffee</h3>
-            <p>No critical anomalies detected.</p>
-        </div>
-        """, unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        left_table = c1.selectbox("Left Table", table_list)
+        right_table = c2.selectbox("Right Table", ["(None)"] + table_list)
+        
+        join_col = None
+        if right_table != "(None)":
+            try:
+                l_cols = pd.read_sql(f"SELECT * FROM {left_table} LIMIT 0", conn).columns.tolist()
+                r_cols = pd.read_sql(f"SELECT * FROM {right_table} LIMIT 0", conn).columns.tolist()
+                common = list(set(l_cols) & set(r_cols))
+                if common:
+                    join_col = c3.selectbox("Join Key", common)
+                else:
+                    st.warning("⚠️ No common columns found.")
+            except Exception:
+                pass
 
-with st.expander("🔎 View Raw Data Logs"):
-    st.dataframe(df.sort_values('order_purchase_timestamp', ascending=False).head(50), use_container_width=True)
+        col_btn_1, col_btn_2, _ = st.columns([1, 1, 3])
+
+        if col_btn_1.button("🔎 Preview"):
+            try:
+                if right_table == "(None)":
+                    merged_df = pd.read_sql(f"SELECT * FROM {left_table}", conn)
+                else:
+                    if not join_col:
+                        st.error("Select a Join Key.")
+                        st.stop()
+                    df_left = pd.read_sql(f"SELECT * FROM {left_table}", conn)
+                    df_right = pd.read_sql(f"SELECT * FROM {right_table}", conn)
+                    merged_df = pd.merge(df_left, df_right, on=join_col, how='inner')
+                
+                if not merged_df.empty:
+                    st.session_state['preview_df'] = merged_df
+                    st.dataframe(merged_df.head(5))
+                    st.success(f"Preview generated: {len(merged_df)} rows")
+            except Exception as e:
+                st.error(f"Merge Failed: {e}")
+
+        if 'preview_df' in st.session_state:
+            if col_btn_2.button("💾 Save as Master"):
+                try:
+                    st.session_state['preview_df'].to_sql(
+                        "master_view", conn, if_exists='replace', index=False
+                    )
+                    st.session_state['master_df'] = st.session_state['preview_df']
+                    st.success("Master View Saved! Proceed to Visualization.")
+                except Exception as e:
+                    st.error(f"Save Failed: {e}")
+
+# ==========================================
+# PAGE 2: VISUAL INSIGHTS
+# ==========================================
+elif page == "2. Visual Insights":
+    st.title("📊 Visual Insights")
+    df = st.session_state['master_df']
+    
+    if df is None:
+        st.warning("⚠️ No Master Data set.")
+        st.stop()
+        
+    c1, c2, c3 = st.columns(3)
+    col_date = c1.selectbox("Date Column", df.columns)
+    col_target = c2.selectbox("Metric", df.select_dtypes(include=np.number).columns)
+    chart_type = c3.selectbox("Chart Type", ["Line Trend", "Bar Chart", "Distribution"])
+    
+    try:
+        df['dt_mapped'] = pd.to_datetime(df[col_date], errors='coerce')
+        daily = df.groupby('dt_mapped')[col_target].sum().reset_index()
+        
+        st.markdown("---")
+        if chart_type == "Line Trend":
+            fig = px.line(daily, x='dt_mapped', y=col_target)
+        elif chart_type == "Bar Chart":
+            fig = px.bar(daily, x='dt_mapped', y=col_target)
+        else:
+            fig = px.histogram(df, x=col_target, nbins=50)
+            
+        st.plotly_chart(fig, use_container_width=True)
+        
+        st.markdown("### ⚡ Quick Stats")
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Total", f"{daily[col_target].sum():,.0f}")
+        k2.metric("Average", f"{daily[col_target].mean():,.2f}")
+        k3.metric("Max Day", f"{daily[col_target].max():,.2f}")
+
+        st.markdown("---")
+        st.subheader("AI Trend Analyst")
+        if st.button("✨ Analyze Trends"):
+            with st.spinner("Analyzing..."):
+                summary = f"Metric: {col_target}, Total: {daily[col_target].sum()}"
+                st.info(llm_engine.analyze_visuals(summary))
+
+    except Exception as e:
+        st.error(f"Visualization Error: {e}")
+
+# ==========================================
+# PAGE 3: FORECAST ENGINE
+# ==========================================
+elif page == "3. Forecast Engine":
+    st.title("Forecaster")
+    df = st.session_state['master_df']
+    
+    if df is None:
+        st.warning("⚠️ No Master Data set.")
+        st.stop()
+        
+    c1, c2, c3, c4 = st.columns(4)
+    col_date = c1.selectbox("Date", df.columns)
+    col_target = c2.selectbox("Target", df.select_dtypes(include=np.number).columns)
+    model_choice = c3.selectbox("Model", ["XGBoost", "Prophet"])
+    mode_choice = c4.radio("Mode", ["Validation", "Future (30 Days)"])
+    
+    if st.button("🚀 Run Prediction"):
+        with st.spinner("Calculating..."):
+            train, test, forecast, metrics = ml_engine.run_forecast(
+                df,
+                col_date,
+                col_target,
+                model_choice,
+                "Validation" if "Validation" in mode_choice else "Future",
+                data_context
+            )
+
+            st.session_state['forecast_results'] = {
+                'train': train,
+                'test': test,
+                'forecast': forecast,
+                'metrics': metrics,
+                'model': model_choice,
+                'mode': mode_choice
+            }
+
+    res = st.session_state['forecast_results']
+    if res:
+        st.markdown("---")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=res['train']['ds'], y=res['train']['y'],
+            name='History', line=dict(color='#95a5a6')
+        ))
+        
+        if "Validation" in res['mode']:
+            fig.add_trace(go.Scatter(
+                x=res['test']['ds'], y=res['test']['y'],
+                name='Actual', line=dict(color='#2980b9')
+            ))
+            fig.add_trace(go.Scatter(
+                x=res['forecast']['ds'], y=res['forecast']['yhat'],
+                name='AI', line=dict(color='#e74c3c', dash='dot')
+            ))
+        else:
+            fig.add_trace(go.Scatter(
+                x=res['forecast']['ds'], y=res['forecast']['yhat'],
+                name='Future', line=dict(color='#27ae60')
+            ))
+        
+        st.plotly_chart(fig, use_container_width=True)
+
+        # ---- METRICS (FINAL, DOMAIN-AWARE) ----
+        metrics = res['metrics']
+        if metrics:
+            cols = st.columns(len(metrics))
+            for col, (k, v) in zip(cols, metrics.items()):
+                if k == "Direction":
+                    col.metric("Trend Signal", f"{v:.1f}%")
+                elif k == "SMAPE":
+                    col.metric("SMAPE", f"{v:.1f}%")
+                else:
+                    col.metric(k, f"{v:.2f}")
+        else:
+            st.info("Future forecast — no validation metrics available.")
+
+        if data_context == "Financial":
+            st.caption("⚠ Financial forecasts are statistical signals, not trading advice.")
