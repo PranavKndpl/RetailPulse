@@ -15,21 +15,20 @@ The system is built as a microservices application using Docker Compose.
 
 ```mermaid
 graph TD
-    User[User / Operations Manager] -->|Interacts| UI[Streamlit Dashboard]
+    User[User / Operations Manager] -->|"Interacts"| UI[Streamlit Dashboard]
     
     subgraph "Application Container"
-        UI -->|Triggers| MLE[ML Engine (XGBoost + IsoForest)]
-        UI -->|Consults| Agent[AI Agent Orchestrator]
+        UI -->|"Triggers"| MLE[ML Engine (XGBoost \+ IsoForest)]
+        UI -->|"Consults"| Agent[AI Agent Orchestrator]
         
-        Agent -->|Summarizes| Worker[Worker LLM (Llama-3.1-8B)]
-        Agent -->|Decides| Manager[Manager LLM (Llama-3.3-70B)]
-        Agent <-->|Retrieves Policy| RAG[(ChromaDB Vector Store)]
+        Agent -->|"Summarizes"| Worker[Worker LLM (Llama-3.1-8B)]
+        Agent -->|"Decides"| Manager[Manager LLM (Llama-3.3-70B)]
+        Agent <-->|"Retrieves Policy"| RAG[(ChromaDB Vector Store)]
     end
     
     subgraph "Data Container"
-        MLE <-->|Reads/Writes| DB[(PostgreSQL Database)]
+        MLE <-->|"Reads/Writes"| DB[(PostgreSQL Database)]
     end
-
 ```
 
 ---
