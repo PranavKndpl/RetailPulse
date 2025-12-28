@@ -1,4 +1,3 @@
-```markdown
 # ⚡ RetailPulse: AI-Driven Supply Chain Command Center
 
 ![Python](https://img.shields.io/badge/Python-3.10-blue)
