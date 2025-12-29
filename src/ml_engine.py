@@ -14,31 +14,23 @@ class MLEngine:
     def __init__(self):
         pass
 
-    # -----------------------------
-    # DATA PREPARATION
-    # -----------------------------
     def _prepare_data(self, df, date_col, target_col, context):
         data = df[[date_col, target_col]].copy()
         data.columns = ['ds', 'y']
         data['ds'] = pd.to_datetime(data['ds'])
         data = data.sort_values('ds').dropna()
 
-        # Finance → log returns
+        # Finance 
         if context == "Financial":
             data['y'] = np.log(data['y'] / data['y'].shift(1))
 
-            # Remove invalid numeric values (CRITICAL)
             data = data.replace([np.inf, -np.inf], np.nan)
 
-            # Clip extreme returns (stability)
             data['y'] = data['y'].clip(lower=-0.2, upper=0.2)
 
         return data.dropna()
 
-    # -----------------------------
-    # FEATURE ENGINEERING (CAUSAL)
-    # -----------------------------
-    def _features(self, df, context):
+    def _features(self, df, context, dropna=True):
         df = df.copy()
 
         df['lag_1'] = df['y'].shift(1)
@@ -53,22 +45,24 @@ class MLEngine:
             df['vol_7'] = df['y'].shift(1).rolling(7).std()
 
         features = [c for c in df.columns if c not in ['ds', 'y']]
-        return df.dropna(), features
+        if dropna:
+            return df.dropna(), features
+        else:
+            return df, features
 
-    # -----------------------------
-    # METRICS
-    # -----------------------------
     def _direction_accuracy(self, y_true, y_pred):
         return (
             np.sign(y_true.diff().iloc[1:]) ==
             np.sign(y_pred.diff().iloc[1:])
         ).mean() * 100
 
-    # -----------------------------
-    # XGBOOST
-    # -----------------------------
+
     def _xgboost(self, data, context, mode):
         data, feats = self._features(data, context)
+
+        if len(data) < 14:
+            raise ValueError("Not enough data for recursive forecasting (min 14 rows).")
+
 
         split = int(len(data) * 0.8)
         train, test = data.iloc[:split], data.iloc[split:]
@@ -87,12 +81,18 @@ class MLEngine:
             test['yhat'] = model.predict(test[feats])
             return train, test, test[['ds', 'yhat']]
 
-        # Recursive 30-day forecast
+        # 30-day forecast
         history = data.copy()
         future = []
 
         for _ in range(30):
+            history, feats = self._features(history, context, dropna=False)
+
             last = history.iloc[-1:]
+            last = last.dropna()
+
+            if last.empty:
+                break
             pred = model.predict(last[feats])[0]
             next_date = last['ds'].values[0] + pd.Timedelta(days=1)
 
@@ -100,14 +100,10 @@ class MLEngine:
                 [history, pd.DataFrame({'ds': [next_date], 'y': [pred]})],
                 ignore_index=True
             )
-            history, feats = self._features(history, context)
             future.append({'ds': next_date, 'yhat': pred})
 
         return history, None, pd.DataFrame(future)
 
-    # -----------------------------
-    # PROPHET
-    # -----------------------------
     def _prophet(self, data, mode):
         m = Prophet()
         split = int(len(data) * 0.8)
@@ -122,9 +118,8 @@ class MLEngine:
         fc = m.predict(m.make_future_dataframe(30))
         return data, None, fc[['ds', 'yhat']]
 
-    # -----------------------------
-    # MAIN ENTRY
-    # -----------------------------
+
+    # main entry
     def run_forecast(self, df, date_col, target_col, model, mode, context):
         data = self._prepare_data(df, date_col, target_col, context)
 
@@ -134,7 +129,7 @@ class MLEngine:
             train, test, forecast = self._prophet(data, mode)
 
         metrics = {}
-        if mode == "Validation":
+        if mode == "Validation" and test is not None:
             y_true = test['y'].reset_index(drop=True)
             y_pred = forecast['yhat'].reset_index(drop=True)
 

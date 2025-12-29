@@ -2,6 +2,7 @@ services:
   db:
     image: postgres:15
     container_name: retail_pulse_db
+    restart: always
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -28,8 +29,10 @@ services:
       - .env
     environment:
       - DB_HOST=db 
+      - DB_PORT=5432
     volumes:
-      - .:/app
+      - .:/app  
+    shm_size: '2gb' 
 
 volumes:
   postgres_data:

@@ -5,6 +5,7 @@ python-dotenv
 xgboost
 scikit-learn
 joblib
+prophet
 
 langchain
 langchain-community
@@ -13,6 +14,7 @@ langchain-core
 langchain-groq
 langchain-chroma
 sentence-transformers
+chromadb
 
 streamlit
 plotly
