@@ -154,7 +154,11 @@ if page == "1. Data Blender":
     st.title("📂 Data Blender")
 
     with st.expander("📤 Upload Raw Data", expanded=True):
-        uploaded_files = st.file_uploader("Upload CSVs", accept_multiple_files=True)
+        uploaded_files = st.file_uploader(
+            "Upload CSV or Excel files",
+            type=["csv", "xlsx"],
+            accept_multiple_files=True
+        )
 
         if uploaded_files:
             success_count = 0
@@ -257,7 +261,7 @@ elif page == "2. Visual Insights":
         else:
             fig = px.histogram(df, x=col_target, nbins=50)
             
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         
         st.markdown("### ⚡ Quick Stats")
         k1, k2, k3 = st.columns(3)
@@ -358,7 +362,7 @@ elif page == "3. Forecast Engine":
             xaxis_title="Date"
         )
         
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # ---- METRICS ----
         metrics = res['metrics']
